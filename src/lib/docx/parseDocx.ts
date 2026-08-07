@@ -26,7 +26,10 @@ export interface DocxMargins {
 }
 
 export interface ParsedDocx {
+  /** Đoạn văn nằm trực tiếp trong body (không kể trong bảng) - theo đúng thứ tự văn bản. */
   paragraphs: DocxParagraph[];
+  /** Toàn bộ đoạn văn, kể cả nằm trong bảng (VD: khối "Nơi nhận" / chữ ký thường đặt trong bảng 2 cột). */
+  allParagraphs: DocxParagraph[];
   margins: DocxMargins;
   pageWidthMm?: number;
   pageHeightMm?: number;
@@ -76,6 +79,35 @@ function extractRunProps(run: any, defaults: { fontFamily?: string; fontSizePt?:
   return { fontFamily, fontSizePt, bold, italic, uppercase: caps };
 }
 
+function buildParagraph(p: any, defaults: { fontFamily?: string; fontSizePt?: number }): DocxParagraph {
+  const alignment = p["w:pPr"]?.["w:jc"]?.["@_w:val"];
+  const runNodes: any[] = asArray(p["w:r"]);
+  const runs: DocxRun[] = runNodes.map((r) => ({
+    text: extractRunText(r),
+    ...extractRunProps(r, defaults),
+  }));
+  return { text: runs.map((r) => r.text).join(""), alignment, runs };
+}
+
+// Đệ quy vì ô bảng (w:tc) có thể chứa bảng lồng nhau.
+function collectTableParagraphs(
+  tbl: any,
+  defaults: { fontFamily?: string; fontSizePt?: number }
+): DocxParagraph[] {
+  const result: DocxParagraph[] = [];
+  for (const tr of asArray(tbl["w:tr"])) {
+    for (const tc of asArray(tr["w:tc"])) {
+      for (const p of asArray(tc["w:p"])) {
+        result.push(buildParagraph(p, defaults));
+      }
+      for (const nestedTbl of asArray(tc["w:tbl"])) {
+        result.push(...collectTableParagraphs(nestedTbl, defaults));
+      }
+    }
+  }
+  return result;
+}
+
 export async function parseDocx(buffer: Buffer | ArrayBuffer): Promise<ParsedDocx> {
   const zip = await JSZip.loadAsync(buffer);
 
@@ -100,20 +132,14 @@ export async function parseDocx(buffer: Buffer | ArrayBuffer): Promise<ParsedDoc
 
   const body = doc["w:document"]?.["w:body"] ?? {};
   const paragraphNodes: any[] = asArray(body["w:p"]);
+  const runDefaults = { fontFamily: defaultFontFamily, fontSizePt: defaultFontSizePt };
 
-  const paragraphs: DocxParagraph[] = paragraphNodes.map((p) => {
-    const alignment = p["w:pPr"]?.["w:jc"]?.["@_w:val"];
-    const runNodes: any[] = asArray(p["w:r"]);
-    const runs: DocxRun[] = runNodes.map((r) => ({
-      text: extractRunText(r),
-      ...extractRunProps(r, { fontFamily: defaultFontFamily, fontSizePt: defaultFontSizePt }),
-    }));
-    return {
-      text: runs.map((r) => r.text).join(""),
-      alignment,
-      runs,
-    };
-  });
+  const paragraphs: DocxParagraph[] = paragraphNodes.map((p) => buildParagraph(p, runDefaults));
+
+  const tableParagraphs: DocxParagraph[] = asArray(body["w:tbl"]).flatMap((tbl) =>
+    collectTableParagraphs(tbl, runDefaults)
+  );
+  const allParagraphs: DocxParagraph[] = [...paragraphs, ...tableParagraphs];
 
   // Lấy margin/khổ giấy từ sectPr cuối cùng (áp dụng cho toàn bộ hoặc section cuối).
   let sectPr = body["w:sectPr"];
@@ -139,5 +165,5 @@ export async function parseDocx(buffer: Buffer | ArrayBuffer): Promise<ParsedDoc
   const pageWidthMm = pgSz?.["@_w:w"] !== undefined ? Number(pgSz["@_w:w"]) * TWIP_TO_MM : undefined;
   const pageHeightMm = pgSz?.["@_w:h"] !== undefined ? Number(pgSz["@_w:h"]) * TWIP_TO_MM : undefined;
 
-  return { paragraphs, margins, pageWidthMm, pageHeightMm, defaultFontFamily, defaultFontSizePt };
+  return { paragraphs, allParagraphs, margins, pageWidthMm, pageHeightMm, defaultFontFamily, defaultFontSizePt };
 }
