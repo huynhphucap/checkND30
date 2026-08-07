@@ -41,8 +41,13 @@ const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
   textNodeName: "#text",
-  isArray: (name) => ["w:p", "w:r", "w:tbl", "w:tr", "w:tc"].includes(name),
+  isArray: (name) => ["w:p", "w:r", "w:tbl", "w:tr", "w:tc", "w:style"].includes(name),
 });
+
+interface RunDefaults {
+  fontFamily?: string;
+  fontSizePt?: number;
+}
 
 // word/document.xml dùng đơn vị twip (1/20 pt) cho margin, 1pt = 1/72 inch.
 const TWIP_TO_MM = 25.4 / 1440;
@@ -60,7 +65,7 @@ function extractRunText(run: any): string {
     .join("");
 }
 
-function extractRunProps(run: any, defaults: { fontFamily?: string; fontSizePt?: number }): Omit<DocxRun, "text"> {
+function extractRunProps(run: any, defaults: RunDefaults): Omit<DocxRun, "text"> {
   const rPr = run["w:rPr"];
   if (!rPr) return { ...defaults };
 
@@ -79,12 +84,65 @@ function extractRunProps(run: any, defaults: { fontFamily?: string; fontSizePt?:
   return { fontFamily, fontSizePt, bold, italic, uppercase: caps };
 }
 
-function buildParagraph(p: any, defaults: { fontFamily?: string; fontSizePt?: number }): DocxParagraph {
+// Đọc word/styles.xml: mỗi named style (VD "Normal", "Kinhgui"...) có thể tự định nghĩa
+// font/cỡ chữ riêng trong w:rPr của chính nó, và có thể kế thừa (w:basedOn) từ style khác.
+// Nếu 1 đoạn văn tham chiếu style qua w:pStyle nhưng không set font trực tiếp trên run,
+// font "thật" của đoạn đó là font của style - không phải font mặc định toàn tài liệu.
+type StyleMap = Map<string, { fontFamily?: string; fontSizePt?: number; basedOn?: string }>;
+
+function parseStylesXml(styles: any): { styleMap: StyleMap; docDefaults: RunDefaults } {
+  const docDefaultsNode = styles["w:styles"]?.["w:docDefaults"]?.["w:rPrDefault"]?.["w:rPr"];
+  const docDefaults: RunDefaults = {
+    fontFamily: docDefaultsNode?.["w:rFonts"]?.["@_w:ascii"],
+    fontSizePt: docDefaultsNode?.["w:sz"]?.["@_w:val"]
+      ? Number(docDefaultsNode["w:sz"]["@_w:val"]) * HALF_POINT_TO_PT
+      : undefined,
+  };
+
+  const styleMap: StyleMap = new Map();
+  for (const style of asArray(styles["w:styles"]?.["w:style"])) {
+    const styleId = style["@_w:styleId"];
+    if (!styleId) continue;
+    const rPr = style["w:rPr"];
+    styleMap.set(styleId, {
+      fontFamily: rPr?.["w:rFonts"]?.["@_w:ascii"] ?? rPr?.["w:rFonts"]?.["@_w:eastAsia"],
+      fontSizePt: rPr?.["w:sz"]?.["@_w:val"] ? Number(rPr["w:sz"]["@_w:val"]) * HALF_POINT_TO_PT : undefined,
+      basedOn: style["w:basedOn"]?.["@_w:val"],
+    });
+  }
+
+  return { styleMap, docDefaults };
+}
+
+function resolveStyleDefaults(styleId: string | undefined, styleMap: StyleMap, docDefaults: RunDefaults): RunDefaults {
+  if (!styleId) return docDefaults;
+
+  let fontFamily: string | undefined;
+  let fontSizePt: number | undefined;
+  const visited = new Set<string>();
+  let current: string | undefined = styleId;
+
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const entry = styleMap.get(current);
+    if (!entry) break;
+    fontFamily ??= entry.fontFamily;
+    fontSizePt ??= entry.fontSizePt;
+    current = entry.basedOn;
+  }
+
+  return { fontFamily: fontFamily ?? docDefaults.fontFamily, fontSizePt: fontSizePt ?? docDefaults.fontSizePt };
+}
+
+function buildParagraph(p: any, defaults: RunDefaults, styleMap: StyleMap): DocxParagraph {
   const alignment = p["w:pPr"]?.["w:jc"]?.["@_w:val"];
+  const pStyleId = p["w:pPr"]?.["w:pStyle"]?.["@_w:val"];
+  const paragraphDefaults = resolveStyleDefaults(pStyleId, styleMap, defaults);
+
   const runNodes: any[] = asArray(p["w:r"]);
   const runs: DocxRun[] = runNodes.map((r) => ({
     text: extractRunText(r),
-    ...extractRunProps(r, defaults),
+    ...extractRunProps(r, paragraphDefaults),
   }));
   return { text: runs.map((r) => r.text).join(""), alignment, runs };
 }
@@ -92,16 +150,17 @@ function buildParagraph(p: any, defaults: { fontFamily?: string; fontSizePt?: nu
 // Đệ quy vì ô bảng (w:tc) có thể chứa bảng lồng nhau.
 function collectTableParagraphs(
   tbl: any,
-  defaults: { fontFamily?: string; fontSizePt?: number }
+  defaults: RunDefaults,
+  styleMap: StyleMap
 ): DocxParagraph[] {
   const result: DocxParagraph[] = [];
   for (const tr of asArray(tbl["w:tr"])) {
     for (const tc of asArray(tr["w:tc"])) {
       for (const p of asArray(tc["w:p"])) {
-        result.push(buildParagraph(p, defaults));
+        result.push(buildParagraph(p, defaults, styleMap));
       }
       for (const nestedTbl of asArray(tc["w:tbl"])) {
-        result.push(...collectTableParagraphs(nestedTbl, defaults));
+        result.push(...collectTableParagraphs(nestedTbl, defaults, styleMap));
       }
     }
   }
@@ -119,25 +178,24 @@ export async function parseDocx(buffer: Buffer | ArrayBuffer): Promise<ParsedDoc
   const doc = xmlParser.parse(documentXml);
 
   const stylesXmlFile = zip.file("word/styles.xml");
-  let defaultFontFamily: string | undefined;
-  let defaultFontSizePt: number | undefined;
+  let styleMap: StyleMap = new Map();
+  let runDefaults: RunDefaults = {};
   if (stylesXmlFile) {
     const stylesXml = await stylesXmlFile.async("string");
-    const styles = xmlParser.parse(stylesXml);
-    const docDefaults = styles["w:styles"]?.["w:docDefaults"]?.["w:rPrDefault"]?.["w:rPr"];
-    defaultFontFamily = docDefaults?.["w:rFonts"]?.["@_w:ascii"];
-    const sizeHalfPt = docDefaults?.["w:sz"]?.["@_w:val"];
-    defaultFontSizePt = sizeHalfPt ? Number(sizeHalfPt) * HALF_POINT_TO_PT : undefined;
+    const parsed = parseStylesXml(xmlParser.parse(stylesXml));
+    styleMap = parsed.styleMap;
+    runDefaults = parsed.docDefaults;
   }
+  const defaultFontFamily = runDefaults.fontFamily;
+  const defaultFontSizePt = runDefaults.fontSizePt;
 
   const body = doc["w:document"]?.["w:body"] ?? {};
   const paragraphNodes: any[] = asArray(body["w:p"]);
-  const runDefaults = { fontFamily: defaultFontFamily, fontSizePt: defaultFontSizePt };
 
-  const paragraphs: DocxParagraph[] = paragraphNodes.map((p) => buildParagraph(p, runDefaults));
+  const paragraphs: DocxParagraph[] = paragraphNodes.map((p) => buildParagraph(p, runDefaults, styleMap));
 
   const tableParagraphs: DocxParagraph[] = asArray(body["w:tbl"]).flatMap((tbl) =>
-    collectTableParagraphs(tbl, runDefaults)
+    collectTableParagraphs(tbl, runDefaults, styleMap)
   );
   const allParagraphs: DocxParagraph[] = [...paragraphs, ...tableParagraphs];
 

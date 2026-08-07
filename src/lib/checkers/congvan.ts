@@ -11,7 +11,9 @@ function inRange(value: number | undefined, min: number, max: number, tolerance 
 }
 
 function normalize(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
+  // Chuẩn hoá về NFC: Word đôi khi lưu chữ Việt ở dạng tổ hợp (NFD, ví dụ "a" + dấu huyền
+  // riêng) - nhìn giống hệt "à" (NFC) nhưng khác chuỗi ký tự, khiến regex không khớp.
+  return text.normalize("NFC").replace(/\s+/g, " ").trim();
 }
 
 function stripDiacritics(text: string): string {
@@ -52,7 +54,7 @@ function findParagraphIndex(
 
 export function checkCongVan(doc: ParsedDocx): CheckReport {
   const results: RuleResult[] = [];
-  const { paragraphs, allParagraphs, margins, pageWidthMm, pageHeightMm } = doc;
+  const { allParagraphs, margins, pageWidthMm, pageHeightMm } = doc;
 
   // 1. Khổ giấy A4
   const isA4 = inRange(pageWidthMm, 210, 210, 3) && inRange(pageHeightMm, 297, 297, 3);
@@ -138,7 +140,9 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 5. Quốc hiệu
-  const heading = firstNonEmptyParagraphs(paragraphs, 6);
+  // Khối quốc hiệu/tiêu ngữ thường nằm trong bảng 2 cột đầu văn bản (cùng tên cơ quan ban
+  // hành) nên tìm trên allParagraphs (bao gồm bảng), không chỉ đoạn văn ngoài bảng.
+  const heading = firstNonEmptyParagraphs(allParagraphs, 10);
   const quocHieuIdx = findParagraphIndex(heading, (t) =>
     stripDiacritics(t).toUpperCase().includes("CONG HOA XA HOI CHU NGHIA VIET NAM")
   );
