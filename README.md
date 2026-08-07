@@ -6,39 +6,48 @@ hệ thống đọc font chữ, cỡ chữ, lề trang, cấu trúc (quốc hi�
 hiệu, ngày tháng, nơi nhận...) và trả về báo cáo Đạt/Không đạt/Cần kiểm tra
 cho từng tiêu chí.
 
-Stack: Next.js (App Router) + TypeScript + Tailwind CSS + Supabase (Auth,
-Postgres, Storage).
+Stack: Next.js (App Router) + TypeScript + Tailwind CSS + Neon (Postgres
+serverless) + Auth.js (Google sign-in).
 
-## 1. Tạo Supabase project
+## 1. Tạo Neon project (database)
 
-1. Vào [supabase.com](https://supabase.com) → tạo project mới.
-2. Vào **Project Settings → API**, lấy 3 giá trị:
-   - `Project URL` → `NEXT_PUBLIC_SUPABASE_URL`
-   - `anon public` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY` (bí mật, chỉ dùng ở server)
-3. Copy `.env.local.example` thành `.env.local` và điền các giá trị trên:
+1. Vào [neon.tech](https://neon.tech) → tạo project mới (free tier).
+2. Vào **Connection Details**, copy connection string dạng
+   `postgresql://user:password@ep-xxxx.neon.tech/dbname?sslmode=require`.
+3. Copy `.env.local.example` thành `.env.local` và điền vào `DATABASE_URL`:
 
    ```bash
    cp .env.local.example .env.local
    ```
 
-## 2. Chạy migration (tạo bảng + policy)
+## 2. Chạy migration (tạo bảng)
 
-File SQL migration nằm ở `supabase/migrations/0001_init.sql` — tạo bảng
-`checks` (lưu lịch sử kiểm tra), bật Row Level Security, và tạo bucket
-Storage `uploads`.
-
-Cách 1 - dán trực tiếp vào **SQL Editor** trên Supabase Dashboard.
-
-Cách 2 - dùng Supabase CLI:
+File SQL nằm ở `db/migrations/0001_init.sql` — tạo bảng `checks` lưu lịch sử
+kiểm tra. Dán trực tiếp vào **SQL Editor** trên Neon Console, hoặc chạy qua
+`psql`:
 
 ```bash
-npx supabase login
-npx supabase link --project-ref <project-ref>
-npx supabase db push
+psql "$DATABASE_URL" -f db/migrations/0001_init.sql
 ```
 
-## 3. Chạy app local
+## 3. Tạo Google OAuth (đăng nhập, không bắt buộc)
+
+Đăng nhập là tuỳ chọn — dùng để lưu lịch sử kiểm tra. App vẫn check được
+file bình thường khi chưa đăng nhập.
+
+1. Vào [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   → **Create Credentials → OAuth client ID** → loại **Web application**.
+2. Authorized redirect URI: `http://localhost:3000/api/auth/callback/google`
+   (production thì thêm domain thật, ví dụ
+   `https://your-domain.com/api/auth/callback/google`).
+3. Điền `AUTH_GOOGLE_ID` và `AUTH_GOOGLE_SECRET` vào `.env.local`.
+4. Sinh `AUTH_SECRET`:
+
+   ```bash
+   npx auth secret
+   ```
+
+## 4. Chạy app local
 
 ```bash
 npm install
@@ -47,27 +56,26 @@ npm run dev
 
 Mở [http://localhost:3000](http://localhost:3000).
 
-Đăng nhập không bắt buộc để dùng tính năng check — chỉ cần để lưu lịch sử
-kiểm tra. Việc bật đăng nhập (Google/email OTP...) cấu hình tại **Supabase
-Dashboard → Authentication → Providers**.
-
-## 4. Cấu trúc chính
+## 5. Cấu trúc chính
 
 ```
 src/
   app/
-    api/check/route.ts     # nhận file .docx, phân tích, trả kết quả
-    page.tsx                # trang chủ (upload + hiển thị báo cáo)
+    api/check/route.ts       # nhận file .docx, phân tích, trả kết quả
+    api/auth/[...nextauth]/  # route handler Auth.js
+    page.tsx                 # trang chủ (upload + hiển thị báo cáo)
   components/
     UploadChecker.tsx        # UI upload + render kết quả
+    AuthButton.tsx            # nút đăng nhập/đăng xuất Google
   lib/
     docx/parseDocx.ts        # đọc font/cỡ chữ/lề/nội dung từ .docx
     checkers/congvan.ts       # rule engine theo Phụ lục I, NĐ 30/2020/NĐ-CP
-    supabase/                # client, server, admin, middleware helpers
-supabase/migrations/          # SQL schema + RLS policies
+    db.ts                     # kết nối Neon (postgres.js)
+    auth.ts                   # cấu hình Auth.js (Google, JWT session)
+db/migrations/                # SQL schema
 ```
 
-## 5. Mở rộng thêm loại văn bản
+## 6. Mở rộng thêm loại văn bản
 
 Hiện MVP mới hỗ trợ **Công văn**. Để thêm Quyết định, Thông báo, Tờ trình...
 tạo thêm file rule engine trong `src/lib/checkers/`, theo cùng interface
@@ -75,5 +83,7 @@ tạo thêm file rule engine trong `src/lib/checkers/`, theo cùng interface
 
 ## Deploy
 
-Deploy được lên [Vercel](https://vercel.com/new) — nhớ khai báo đủ 3 biến
-môi trường Supabase ở phần **Environment Variables** của project.
+Deploy được lên [Vercel](https://vercel.com/new) — khai báo đủ 4 biến môi
+trường (`DATABASE_URL`, `AUTH_SECRET`, `AUTH_GOOGLE_ID`,
+`AUTH_GOOGLE_SECRET`) ở phần **Environment Variables**, và cập nhật
+Authorized redirect URI trên Google Cloud Console sang domain production.

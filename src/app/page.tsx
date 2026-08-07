@@ -1,8 +1,13 @@
 import UploadChecker from "@/components/UploadChecker";
+import AuthButton from "@/components/AuthButton";
 
 export default function Home() {
   return (
     <main className="flex-1 flex flex-col gap-10 px-6 py-16">
+      <div className="max-w-2xl mx-auto w-full flex justify-end">
+        <AuthButton />
+      </div>
+
       <header className="text-center flex flex-col gap-2">
         <h1 className="text-2xl md:text-3xl font-bold">
           Check thể thức văn bản theo Nghị định 30

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { parseDocx } from "@/lib/docx/parseDocx";
 import { checkCongVan } from "@/lib/checkers/congvan";
-import { createClient } from "@/lib/supabase/server";
+import { auth } from "@/lib/auth";
+import { getSql } from "@/lib/db";
 
 export const runtime = "nodejs";
 
@@ -46,22 +47,18 @@ export async function POST(request: Request) {
     );
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await auth();
+  const user = session?.user;
 
-  if (user) {
-    const { error: dbError } = await supabase.from("checks").insert({
-      user_id: user.id,
-      file_name: file.name,
-      doc_type: report.docType,
-      score: report.score,
-      passed: report.passed,
-      results: report.results,
-    });
-    if (dbError) {
-      console.error("Không thể lưu lịch sử kiểm tra:", dbError.message);
+  if (user?.id) {
+    try {
+      const sql = getSql();
+      await sql`
+        insert into checks (user_id, user_email, file_name, doc_type, score, passed, results)
+        values (${user.id}, ${user.email ?? null}, ${file.name}, ${report.docType}, ${report.score}, ${report.passed}, ${JSON.stringify(report.results)}::jsonb)
+      `;
+    } catch (dbError) {
+      console.error("Không thể lưu lịch sử kiểm tra:", dbError);
     }
   }
 
