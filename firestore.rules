@@ -1,0 +1,11 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /checks/{checkId} {
+      allow read: if request.auth != null && request.auth.uid == resource.data.userId;
+      // Chỉ ghi qua server (firebase-admin, bỏ qua rules này); client không được ghi trực tiếp.
+      allow write: if false;
+    }
+  }
+}

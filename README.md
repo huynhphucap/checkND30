@@ -6,46 +6,42 @@ hệ thống đọc font chữ, cỡ chữ, lề trang, cấu trúc (quốc hi�
 hiệu, ngày tháng, nơi nhận...) và trả về báo cáo Đạt/Không đạt/Cần kiểm tra
 cho từng tiêu chí.
 
-Stack: Next.js (App Router) + TypeScript + Tailwind CSS + Neon (Postgres
-serverless) + Auth.js (Google sign-in).
+Stack: Next.js (App Router) + TypeScript + Tailwind CSS + Firebase
+(Authentication + Firestore).
 
-## 1. Tạo Neon project (database)
+## 1. Tạo Firebase project
 
-1. Vào [neon.tech](https://neon.tech) → tạo project mới (free tier).
-2. Vào **Connection Details**, copy connection string dạng
-   `postgresql://user:password@ep-xxxx.neon.tech/dbname?sslmode=require`.
-3. Copy `.env.local.example` thành `.env.local` và điền vào `DATABASE_URL`:
+1. Vào [Firebase Console](https://console.firebase.google.com) → tạo project mới.
+2. Vào **Project settings → General → Your apps** → thêm 1 Web app, copy
+   config (`apiKey`, `authDomain`, `projectId`...).
+3. Vào **Build → Authentication → Sign-in method** → bật **Google**.
+4. Vào **Build → Firestore Database** → tạo database (chọn chế độ
+   Production, region gần Việt Nam, ví dụ `asia-southeast1`).
+5. Vào **Project settings → Service accounts** → **Generate new private key**
+   → tải file JSON (dùng cho `firebase-admin` ở server, để lưu lịch sử kiểm tra).
 
-   ```bash
-   cp .env.local.example .env.local
-   ```
-
-## 2. Chạy migration (tạo bảng)
-
-File SQL nằm ở `db/migrations/0001_init.sql` — tạo bảng `checks` lưu lịch sử
-kiểm tra. Dán trực tiếp vào **SQL Editor** trên Neon Console, hoặc chạy qua
-`psql`:
+## 2. Điền biến môi trường
 
 ```bash
-psql "$DATABASE_URL" -f db/migrations/0001_init.sql
+cp .env.local.example .env.local
 ```
 
-## 3. Tạo Google OAuth (đăng nhập, không bắt buộc)
+Điền 6 biến `NEXT_PUBLIC_FIREBASE_*` từ bước 1.2, và 3 biến
+`FIREBASE_PROJECT_ID` / `FIREBASE_CLIENT_EMAIL` / `FIREBASE_PRIVATE_KEY` lấy
+từ file JSON service account ở bước 1.5 (giữ nguyên `\n` trong private key,
+để trong dấu ngoặc kép).
 
-Đăng nhập là tuỳ chọn — dùng để lưu lịch sử kiểm tra. App vẫn check được
-file bình thường khi chưa đăng nhập.
+## 3. Deploy Firestore rules (tuỳ chọn nhưng nên làm)
 
-1. Vào [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-   → **Create Credentials → OAuth client ID** → loại **Web application**.
-2. Authorized redirect URI: `http://localhost:3000/api/auth/callback/google`
-   (production thì thêm domain thật, ví dụ
-   `https://your-domain.com/api/auth/callback/google`).
-3. Điền `AUTH_GOOGLE_ID` và `AUTH_GOOGLE_SECRET` vào `.env.local`.
-4. Sinh `AUTH_SECRET`:
+```bash
+npm install -g firebase-tools
+firebase login
+firebase use --add   # chọn project vừa tạo, đặt alias "default"
+firebase deploy --only firestore:rules
+```
 
-   ```bash
-   npx auth secret
-   ```
+`firestore.rules` chỉ cho phép user đọc đúng lịch sử của chính mình; việc
+ghi dữ liệu chỉ thực hiện qua server (`firebase-admin`, bỏ qua rules).
 
 ## 4. Chạy app local
 
@@ -56,23 +52,25 @@ npm run dev
 
 Mở [http://localhost:3000](http://localhost:3000).
 
+Đăng nhập Google là tuỳ chọn — dùng để lưu lịch sử kiểm tra vào Firestore.
+App vẫn check được file bình thường khi chưa đăng nhập.
+
 ## 5. Cấu trúc chính
 
 ```
 src/
   app/
-    api/check/route.ts       # nhận file .docx, phân tích, trả kết quả
-    api/auth/[...nextauth]/  # route handler Auth.js
+    api/check/route.ts       # nhận file .docx, phân tích, verify idToken, lưu Firestore
     page.tsx                 # trang chủ (upload + hiển thị báo cáo)
   components/
-    UploadChecker.tsx        # UI upload + render kết quả
-    AuthButton.tsx            # nút đăng nhập/đăng xuất Google
+    UploadChecker.tsx        # UI upload + render kết quả, gửi kèm idToken nếu đã đăng nhập
+    AuthButton.tsx            # đăng nhập/đăng xuất Google (Firebase Auth client SDK)
   lib/
     docx/parseDocx.ts        # đọc font/cỡ chữ/lề/nội dung từ .docx
     checkers/congvan.ts       # rule engine theo Phụ lục I, NĐ 30/2020/NĐ-CP
-    db.ts                     # kết nối Neon (postgres.js)
-    auth.ts                   # cấu hình Auth.js (Google, JWT session)
-db/migrations/                # SQL schema
+    firebase/client.ts        # Firebase SDK phía trình duyệt (Auth)
+    firebase/admin.ts         # Firebase Admin SDK phía server (verify token, Firestore)
+firestore.rules                # Security rules cho collection "checks"
 ```
 
 ## 6. Mở rộng thêm loại văn bản
@@ -83,7 +81,6 @@ tạo thêm file rule engine trong `src/lib/checkers/`, theo cùng interface
 
 ## Deploy
 
-Deploy được lên [Vercel](https://vercel.com/new) — khai báo đủ 4 biến môi
-trường (`DATABASE_URL`, `AUTH_SECRET`, `AUTH_GOOGLE_ID`,
-`AUTH_GOOGLE_SECRET`) ở phần **Environment Variables**, và cập nhật
-Authorized redirect URI trên Google Cloud Console sang domain production.
+Deploy được lên [Vercel](https://vercel.com/new) — khai báo đủ 9 biến môi
+trường Firebase ở phần **Environment Variables**. Nếu deploy lên Firebase
+Hosting (frameworks/Next.js) thì chạy `firebase deploy`.

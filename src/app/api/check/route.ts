@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { parseDocx } from "@/lib/docx/parseDocx";
 import { checkCongVan } from "@/lib/checkers/congvan";
-import { auth } from "@/lib/auth";
-import { getSql } from "@/lib/db";
+import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 
 export const runtime = "nodejs";
 
@@ -47,18 +46,26 @@ export async function POST(request: Request) {
     );
   }
 
-  const session = await auth();
-  const user = session?.user;
+  const authHeader = request.headers.get("authorization");
+  const idToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
-  if (user?.id) {
+  if (idToken) {
     try {
-      const sql = getSql();
-      await sql`
-        insert into checks (user_id, user_email, file_name, doc_type, score, passed, results)
-        values (${user.id}, ${user.email ?? null}, ${file.name}, ${report.docType}, ${report.score}, ${report.passed}, ${JSON.stringify(report.results)}::jsonb)
-      `;
-    } catch (dbError) {
-      console.error("Không thể lưu lịch sử kiểm tra:", dbError);
+      const decoded = await getAdminAuth().verifyIdToken(idToken);
+      await getAdminDb()
+        .collection("checks")
+        .add({
+          userId: decoded.uid,
+          userEmail: decoded.email ?? null,
+          fileName: file.name,
+          docType: report.docType,
+          score: report.score,
+          passed: report.passed,
+          results: report.results,
+          createdAt: new Date(),
+        });
+    } catch (err) {
+      console.error("Không thể lưu lịch sử kiểm tra:", err);
     }
   }
 

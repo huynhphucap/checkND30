@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import type { CheckReport, RuleStatus } from "@/lib/checkers/types";
+import { getFirebaseAuth } from "@/lib/firebase/client";
 
 const STATUS_STYLE: Record<RuleStatus, { label: string; className: string }> = {
   pass: { label: "Đạt", className: "bg-emerald-100 text-emerald-800 border-emerald-300" },
@@ -30,7 +31,15 @@ export default function UploadChecker() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch("/api/check", { method: "POST", body: formData });
+
+      const currentUser = getFirebaseAuth().currentUser;
+      const idToken = currentUser ? await currentUser.getIdToken() : null;
+
+      const res = await fetch("/api/check", {
+        method: "POST",
+        body: formData,
+        headers: idToken ? { Authorization: `Bearer ${idToken}` } : undefined,
+      });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? "Có lỗi xảy ra khi kiểm tra file.");
