@@ -50,11 +50,15 @@ const HALF_POINT_TO_PT = 0.5;
 // trimValues: false để không mất khoảng trắng đầu/cuối mỗi run - Word hay tách 1 câu
 // thành nhiều run (do rà lỗi chính tả, theo dõi sửa đổi...), mất khoảng trắng ở ranh giới
 // run sẽ làm dính chữ giữa 2 run lại với nhau.
+// parseTagValue: false để KHÔNG tự ý chuyển text thuần số (VD 1 run chỉ chứa "6", như
+// trường hợp năm "2026" bị Word tách run ngay trước số cuối) thành kiểu number - nếu để
+// mặc định, textOf() bên dưới sẽ bỏ sót hẳn nội dung run đó vì không còn là string.
 const documentXmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
   preserveOrder: true,
   trimValues: false,
+  parseTagValue: false,
 });
 
 // styles.xml chỉ cần tra cứu theo id, không cần giữ thứ tự.
@@ -94,8 +98,10 @@ function findChildren(node: any, tag: string): any[] {
 }
 
 function textOf(node: any): string {
+  // Phòng thủ thêm: dù đã tắt parseTagValue, vẫn ép về string thay vì chỉ chấp nhận
+  // typeof === "string", để không bao giờ âm thầm mất nội dung nếu parser đổi hành vi.
   return childrenOf(node)
-    .map((c: any) => (typeof c["#text"] === "string" ? c["#text"] : ""))
+    .map((c: any) => (c["#text"] !== undefined && c["#text"] !== null ? String(c["#text"]) : ""))
     .join("");
 }
 

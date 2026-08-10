@@ -1,5 +1,5 @@
 import type { ParsedDocx, DocxParagraph } from "@/lib/docx/parseDocx";
-import type { CheckReport, RuleResult } from "./types";
+import type { CheckReport, RuleResult, RuleStatus } from "./types";
 
 const REF_PHU_LUC_I = "Nghị định 30/2020/NĐ-CP, Phụ lục I";
 
@@ -102,6 +102,10 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
     const fonts = paragraphFontFamilies(p);
     return fonts.length > 0 && fonts.some((f) => !f.toLowerCase().includes("times new roman"));
   });
+  const fontExample = nonTimesParagraphs[0];
+  const fontExampleWrongFont = fontExample
+    ? paragraphFontFamilies(fontExample).find((f) => !f.toLowerCase().includes("times new roman"))
+    : undefined;
   results.push({
     id: "font_family",
     label: "Phông chữ Times New Roman",
@@ -109,9 +113,9 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
     message:
       nonTimesParagraphs.length === 0
         ? "Đạt: toàn bộ văn bản dùng phông Times New Roman."
-        : `Không đạt: có ${nonTimesParagraphs.length} đoạn dùng phông khác Times New Roman (VD: "${normalize(
-            nonTimesParagraphs[0].text
-          ).slice(0, 60)}").`,
+        : `Không đạt: có ${nonTimesParagraphs.length} đoạn đang dùng phông "${fontExampleWrongFont ?? "khác"}" thay vì Times New Roman - VD đoạn "${normalize(
+            fontExample.text
+          ).slice(0, 50)}".`,
     reference: REF_PHU_LUC_I,
   });
 
@@ -147,11 +151,13 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
     stripDiacritics(t).toUpperCase().includes("CONG HOA XA HOI CHU NGHIA VIET NAM")
   );
   const quocHieu = quocHieuIdx >= 0 ? heading[quocHieuIdx] : undefined;
-  const quocHieuOk =
-    !!quocHieu &&
-    quocHieu.alignment === "center" &&
-    paragraphIsBold(quocHieu) &&
-    normalize(quocHieu.text) === normalize(quocHieu.text).toUpperCase();
+  const quocHieuIssues: string[] = [];
+  if (quocHieu) {
+    if (quocHieu.alignment !== "center") quocHieuIssues.push("chưa canh giữa");
+    if (!paragraphIsBold(quocHieu)) quocHieuIssues.push("chưa in đậm");
+    if (normalize(quocHieu.text) !== normalize(quocHieu.text).toUpperCase()) quocHieuIssues.push("chưa in hoa toàn bộ");
+  }
+  const quocHieuOk = !!quocHieu && quocHieuIssues.length === 0;
   results.push({
     id: "quoc_hieu",
     label: 'Quốc hiệu "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM"',
@@ -160,7 +166,7 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
       ? "Không tìm thấy dòng Quốc hiệu trong phần đầu văn bản."
       : quocHieuOk
         ? "Đạt: Quốc hiệu in hoa, đậm, căn giữa."
-        : "Tìm thấy dòng Quốc hiệu nhưng cần kiểm tra lại định dạng (in hoa/đậm/căn giữa).",
+        : `Tìm thấy dòng Quốc hiệu nhưng ${quocHieuIssues.join(", ")}.`,
     reference: REF_PHU_LUC_I,
   });
 
@@ -170,7 +176,12 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
     return s.includes("doc lap") && s.includes("tu do") && s.includes("hanh phuc");
   });
   const tieuNgu = tieuNguIdx >= 0 ? heading[tieuNguIdx] : undefined;
-  const tieuNguOk = !!tieuNgu && tieuNgu.alignment === "center" && paragraphIsBold(tieuNgu);
+  const tieuNguIssues: string[] = [];
+  if (tieuNgu) {
+    if (tieuNgu.alignment !== "center") tieuNguIssues.push("chưa canh giữa");
+    if (!paragraphIsBold(tieuNgu)) tieuNguIssues.push("chưa in đậm");
+  }
+  const tieuNguOk = !!tieuNgu && tieuNguIssues.length === 0;
   results.push({
     id: "tieu_ngu",
     label: 'Tiêu ngữ "Độc lập - Tự do - Hạnh phúc"',
@@ -179,7 +190,7 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
       ? "Không tìm thấy dòng Tiêu ngữ ngay dưới Quốc hiệu."
       : tieuNguOk
         ? "Đạt: Tiêu ngữ đậm, căn giữa, có gạch nối giữa các cụm từ."
-        : "Tìm thấy Tiêu ngữ nhưng cần kiểm tra lại định dạng (đậm/căn giữa).",
+        : `Tìm thấy Tiêu ngữ nhưng ${tieuNguIssues.join(", ")}.`,
     reference: REF_PHU_LUC_I,
   });
 
@@ -197,20 +208,49 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 8. Địa danh, ngày tháng năm ban hành
-  const diaDanhRegex = /ngày\s+\d{1,2}\s+tháng\s+\d{1,2}\s+năm\s+\d{4}/i;
-  const diaDanhIdx = findParagraphIndex(paragraphs, (t) => diaDanhRegex.test(t));
+  // Regex "lỏng": chỉ cần có đủ 3 từ khoá ngày/tháng/năm theo đúng thứ tự, số ở mỗi phần là
+  // tuỳ chọn - để phân biệt được 2 trường hợp khác nhau: "không có dòng này" (fail nặng) và
+  // "có dòng nhưng đang bỏ trống 1 ô số" (fail nhẹ hơn, chỉ ra đúng ô nào thiếu).
+  const diaDanhLooseRegex = /ngày\s*(\d{1,2})?\s*tháng\s*(\d{1,2})?\s*năm\s*(\d{4})?/i;
+  const diaDanhIdx = findParagraphIndex(paragraphs, (t) => diaDanhLooseRegex.test(t));
   const diaDanhParagraph = diaDanhIdx >= 0 ? paragraphs[diaDanhIdx] : undefined;
-  const diaDanhOk =
-    !!diaDanhParagraph && diaDanhParagraph.alignment === "right" && paragraphIsItalic(diaDanhParagraph);
+  const diaDanhMatch = diaDanhParagraph ? normalize(diaDanhParagraph.text).match(diaDanhLooseRegex) : null;
+
+  const missingParts: string[] = [];
+  if (diaDanhMatch) {
+    if (!diaDanhMatch[1]) missingParts.push("số ngày");
+    if (!diaDanhMatch[2]) missingParts.push("số tháng");
+    if (!diaDanhMatch[3]) missingParts.push("năm");
+  }
+  const diaDanhComplete = !!diaDanhParagraph && missingParts.length === 0;
+
+  const diaDanhFormatIssues: string[] = [];
+  if (diaDanhComplete && diaDanhParagraph) {
+    if (diaDanhParagraph.alignment !== "right") diaDanhFormatIssues.push("chưa canh phải");
+    if (!paragraphIsItalic(diaDanhParagraph)) diaDanhFormatIssues.push("chưa in nghiêng");
+  }
+
+  let diaDanhStatus: RuleStatus;
+  let diaDanhMessage: string;
+  if (!diaDanhParagraph) {
+    diaDanhStatus = "fail";
+    diaDanhMessage = 'Không đạt: không tìm thấy dòng địa danh, ngày tháng ở đầu văn bản (dạng "..., ngày ... tháng ... năm ...").';
+  } else if (!diaDanhComplete) {
+    diaDanhStatus = "fail";
+    diaDanhMessage = `Không đạt: dòng "${normalize(diaDanhParagraph.text).slice(0, 60)}" đang thiếu ${missingParts.join(", ")} - cần điền đầy đủ.`;
+  } else if (diaDanhFormatIssues.length > 0) {
+    diaDanhStatus = "warning";
+    diaDanhMessage = `Đã điền đủ ngày tháng năm nhưng dòng này ${diaDanhFormatIssues.join(", ")}.`;
+  } else {
+    diaDanhStatus = "pass";
+    diaDanhMessage = "Đạt: dòng địa danh, ngày tháng đầy đủ, nghiêng, canh phải.";
+  }
+
   results.push({
     id: "dia_danh_ngay_thang",
     label: "Địa danh, ngày tháng năm ban hành",
-    status: !diaDanhParagraph ? "fail" : diaDanhOk ? "pass" : "warning",
-    message: !diaDanhParagraph
-      ? 'Không đạt: không tìm thấy dòng địa danh, ngày tháng dạng "..., ngày ... tháng ... năm ...".'
-      : diaDanhOk
-        ? "Đạt: dòng địa danh, ngày tháng nghiêng, canh phải."
-        : "Tìm thấy dòng địa danh, ngày tháng nhưng cần kiểm tra lại định dạng (nghiêng/canh phải).",
+    status: diaDanhStatus,
+    message: diaDanhMessage,
     reference: REF_PHU_LUC_I,
   });
 
