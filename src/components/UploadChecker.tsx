@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   FileText,
   Loader2,
+  RefreshCw,
   UploadCloud,
   XCircle,
 } from "lucide-react";
@@ -212,15 +213,27 @@ export default function UploadChecker() {
                 Loại văn bản: Công văn · {passCount}/{total} tiêu chí đạt
               </p>
             </div>
-            <span
-              className={`shrink-0 text-sm font-semibold px-3 py-1.5 rounded-full ${
-                result.report.passed
-                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                  : "bg-red-500/10 text-red-600 dark:text-red-400"
-              }`}
-            >
-              {result.report.passed ? "Đạt thể thức" : "Chưa đạt"}
-            </span>
+            <div className="flex flex-col items-end gap-2 shrink-0">
+              <span
+                className={`text-sm font-semibold px-3 py-1.5 rounded-full ${
+                  result.report.passed
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                    : "bg-red-500/10 text-red-600 dark:text-red-400"
+                }`}
+              >
+                {result.report.passed ? "Đạt thể thức" : "Chưa đạt"}
+              </span>
+              {!result.report.passed && (
+                <button
+                  type="button"
+                  onClick={() => inputRef.current?.click()}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--accent)] hover:underline"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />
+                  Sửa xong, kiểm tra lại
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-2">
