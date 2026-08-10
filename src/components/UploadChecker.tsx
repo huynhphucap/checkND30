@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -39,6 +39,11 @@ const STATUS_META: Record<
   },
 };
 
+// Thứ tự ưu tiên hiển thị: lỗi nặng trước, để không phải cuộn nhiều mới thấy vấn đề.
+const STATUS_ORDER: RuleStatus[] = ["fail", "warning", "pass"];
+
+type FilterValue = "all" | RuleStatus;
+
 interface CheckResponse {
   fileName: string;
   report: CheckReport;
@@ -56,12 +61,14 @@ export default function UploadChecker() {
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CheckResponse | null>(null);
+  const [filter, setFilter] = useState<FilterValue>("all");
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
     setLoading(true);
     setError(null);
     setResult(null);
+    setFilter("all");
     setFileName(file.name);
 
     try {
@@ -101,8 +108,27 @@ export default function UploadChecker() {
     if (file) void handleFile(file);
   }
 
-  const passCount = result?.report.results.filter((r) => r.status === "pass").length ?? 0;
-  const total = result?.report.results.length ?? 0;
+  const results = useMemo(() => result?.report.results ?? [], [result]);
+  const total = results.length;
+  const counts = useMemo(() => {
+    const c: Record<RuleStatus, number> = { pass: 0, fail: 0, warning: 0 };
+    for (const r of results) c[r.status]++;
+    return c;
+  }, [results]);
+  const passCount = counts.pass;
+
+  const sortedResults = useMemo(
+    () => [...results].sort((a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status)),
+    [results]
+  );
+  const visibleResults = filter === "all" ? sortedResults : sortedResults.filter((r) => r.status === filter);
+
+  const filterOptions: Array<{ value: FilterValue; label: string; count: number }> = [
+    { value: "all", label: "Tất cả", count: total },
+    { value: "fail", label: STATUS_META.fail.label, count: counts.fail },
+    { value: "warning", label: STATUS_META.warning.label, count: counts.warning },
+    { value: "pass", label: STATUS_META.pass.label, count: counts.pass },
+  ];
 
   return (
     <div className="w-full max-w-2xl mx-auto flex flex-col gap-6">
@@ -197,31 +223,65 @@ export default function UploadChecker() {
             </span>
           </div>
 
-          <ul className="flex flex-col gap-3">
-            {result.report.results.map((r, i) => {
-              const meta = STATUS_META[r.status];
-              const Icon = meta.icon;
+          <div className="flex flex-wrap gap-2">
+            {filterOptions.map((opt) => {
+              const active = filter === opt.value;
               return (
-                <li
-                  key={r.id}
-                  style={{ animationDelay: `${i * 40}ms` }}
-                  className={`animate-fade-in-up rounded-xl border border-[var(--border)] border-l-4 ${meta.borderClass} bg-[var(--card)] p-4 flex flex-col gap-1.5 shadow-sm hover:shadow-md transition-shadow`}
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setFilter(opt.value)}
+                  disabled={opt.count === 0 && opt.value !== "all"}
+                  className={`inline-flex items-center gap-1.5 text-sm font-medium rounded-full px-3.5 py-1.5 border transition-colors disabled:opacity-35 disabled:cursor-not-allowed ${
+                    active
+                      ? "bg-[var(--accent)] text-white border-[var(--accent)]"
+                      : "bg-[var(--card)] text-black/70 dark:text-white/70 border-[var(--border)] hover:border-[var(--accent)]/50"
+                  }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium inline-flex items-center gap-2">
-                      <Icon className={`w-4 h-4 shrink-0 ${meta.iconClass}`} strokeWidth={2} />
-                      {r.label}
-                    </span>
-                    <span className={`shrink-0 text-xs font-medium rounded-full px-2.5 py-1 ${meta.badgeClass}`}>
-                      {meta.label}
-                    </span>
-                  </div>
-                  <p className="text-sm text-black/70 dark:text-white/70 pl-6">{r.message}</p>
-                  <p className="text-xs text-black/35 dark:text-white/35 pl-6">{r.reference}</p>
-                </li>
+                  {opt.label}
+                  <span
+                    className={`text-xs rounded-full px-1.5 ${
+                      active ? "bg-white/20" : "bg-black/5 dark:bg-white/10"
+                    }`}
+                  >
+                    {opt.count}
+                  </span>
+                </button>
               );
             })}
-          </ul>
+          </div>
+
+          {visibleResults.length === 0 ? (
+            <p className="text-center text-sm text-black/50 dark:text-white/50 py-8">
+              Không có tiêu chí nào ở mục này.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-3 max-h-[32rem] overflow-y-auto pr-1 -mr-1">
+              {visibleResults.map((r, i) => {
+                const meta = STATUS_META[r.status];
+                const Icon = meta.icon;
+                return (
+                  <li
+                    key={r.id}
+                    style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
+                    className={`animate-fade-in-up rounded-xl border border-[var(--border)] border-l-4 ${meta.borderClass} bg-[var(--card)] p-4 flex flex-col gap-1.5 shadow-sm hover:shadow-md transition-shadow`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium inline-flex items-center gap-2">
+                        <Icon className={`w-4 h-4 shrink-0 ${meta.iconClass}`} strokeWidth={2} />
+                        {r.label}
+                      </span>
+                      <span className={`shrink-0 text-xs font-medium rounded-full px-2.5 py-1 ${meta.badgeClass}`}>
+                        {meta.label}
+                      </span>
+                    </div>
+                    <p className="text-sm text-black/70 dark:text-white/70 pl-6">{r.message}</p>
+                    <p className="text-xs text-black/35 dark:text-white/35 pl-6">{r.reference}</p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
       )}
     </div>
