@@ -26,23 +26,14 @@ export interface DocxMargins {
 }
 
 export interface ParsedDocx {
-  /** Đoạn văn nằm trực tiếp trong body (không kể trong bảng) - theo đúng thứ tự văn bản. */
+  /** Toàn bộ đoạn văn theo đúng thứ tự xuất hiện trong tài liệu, kể cả nằm trong bảng. */
   paragraphs: DocxParagraph[];
-  /** Toàn bộ đoạn văn, kể cả nằm trong bảng (VD: khối "Nơi nhận" / chữ ký thường đặt trong bảng 2 cột). */
-  allParagraphs: DocxParagraph[];
   margins: DocxMargins;
   pageWidthMm?: number;
   pageHeightMm?: number;
   defaultFontFamily?: string;
   defaultFontSizePt?: number;
 }
-
-const xmlParser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  textNodeName: "#text",
-  isArray: (name) => ["w:p", "w:r", "w:tbl", "w:tr", "w:tc", "w:style"].includes(name),
-});
 
 interface RunDefaults {
   fontFamily?: string;
@@ -53,44 +44,115 @@ interface RunDefaults {
 const TWIP_TO_MM = 25.4 / 1440;
 const HALF_POINT_TO_PT = 0.5;
 
+// preserveOrder: true để giữ đúng thứ tự thật trong tài liệu - đoạn văn ở đầu công văn
+// (quốc hiệu, tiêu ngữ, tên cơ quan) thường nằm trong 1 bảng 2 cột; nếu không giữ thứ tự
+// thật, nội dung trong bảng sẽ bị dồn hết ra cuối, sai vị trí so với văn bản gốc.
+// trimValues: false để không mất khoảng trắng đầu/cuối mỗi run - Word hay tách 1 câu
+// thành nhiều run (do rà lỗi chính tả, theo dõi sửa đổi...), mất khoảng trắng ở ranh giới
+// run sẽ làm dính chữ giữa 2 run lại với nhau.
+const documentXmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  preserveOrder: true,
+  trimValues: false,
+});
+
+// styles.xml chỉ cần tra cứu theo id, không cần giữ thứ tự.
+const stylesXmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+  isArray: (name) => ["w:style"].includes(name),
+});
+
 function asArray<T>(value: T | T[] | undefined): T[] {
   if (value === undefined) return [];
   return Array.isArray(value) ? value : [value];
 }
 
-function extractRunText(run: any): string {
-  const texts = asArray(run["w:t"]);
-  return texts
-    .map((t: any) => (typeof t === "object" ? (t["#text"] ?? "") : String(t ?? "")))
+// --- Helpers thao tác trên cây node dạng preserveOrder: mỗi node có dạng
+// { [tagName]: children[], ":@"?: { "@_attr": value } }.
+
+function tagOf(node: any): string {
+  return Object.keys(node).find((k) => k !== ":@") ?? "";
+}
+
+function childrenOf(node: any): any[] {
+  const value = node[tagOf(node)];
+  return Array.isArray(value) ? value : [];
+}
+
+function attrOf(node: any, name: string): string | undefined {
+  return node[":@"]?.[`@_${name}`];
+}
+
+function findChild(node: any, tag: string): any | undefined {
+  return childrenOf(node).find((c: any) => tagOf(c) === tag);
+}
+
+function findChildren(node: any, tag: string): any[] {
+  return childrenOf(node).filter((c: any) => tagOf(c) === tag);
+}
+
+function textOf(node: any): string {
+  return childrenOf(node)
+    .map((c: any) => (typeof c["#text"] === "string" ? c["#text"] : ""))
     .join("");
 }
 
-function extractRunProps(run: any, defaults: RunDefaults): Omit<DocxRun, "text"> {
-  const rPr = run["w:rPr"];
+function boolAttr(node: any): boolean {
+  const val = attrOf(node, "w:val");
+  return val !== "0" && val !== "false";
+}
+
+function numAttrMm(node: any | undefined, attrName: string): number | undefined {
+  const val = node ? attrOf(node, attrName) : undefined;
+  return val !== undefined ? Number(val) * TWIP_TO_MM : undefined;
+}
+
+function extractRunText(runNode: any): string {
+  return findChildren(runNode, "w:t")
+    .map((t) => textOf(t))
+    .join("");
+}
+
+function extractRunProps(runNode: any, defaults: RunDefaults): Omit<DocxRun, "text"> {
+  const rPr = findChild(runNode, "w:rPr");
   if (!rPr) return { ...defaults };
 
-  const fontFamily =
-    rPr["w:rFonts"]?.["@_w:ascii"] ??
-    rPr["w:rFonts"]?.["@_w:eastAsia"] ??
-    defaults.fontFamily;
+  const rFonts = findChild(rPr, "w:rFonts");
+  const fontFamily = rFonts
+    ? (attrOf(rFonts, "w:ascii") ?? attrOf(rFonts, "w:eastAsia") ?? defaults.fontFamily)
+    : defaults.fontFamily;
 
-  const sizeHalfPt = rPr["w:sz"]?.["@_w:val"];
-  const fontSizePt = sizeHalfPt ? Number(sizeHalfPt) * HALF_POINT_TO_PT : defaults.fontSizePt;
+  const szNode = findChild(rPr, "w:sz");
+  const szVal = szNode ? attrOf(szNode, "w:val") : undefined;
+  const fontSizePt = szVal !== undefined ? Number(szVal) * HALF_POINT_TO_PT : defaults.fontSizePt;
 
-  const bold = rPr["w:b"] !== undefined && rPr["w:b"]?.["@_w:val"] !== "0" && rPr["w:b"]?.["@_w:val"] !== "false";
-  const italic = rPr["w:i"] !== undefined && rPr["w:i"]?.["@_w:val"] !== "0" && rPr["w:i"]?.["@_w:val"] !== "false";
-  const caps = rPr["w:caps"] !== undefined && rPr["w:caps"]?.["@_w:val"] !== "0" && rPr["w:caps"]?.["@_w:val"] !== "false";
+  const bNode = findChild(rPr, "w:b");
+  const iNode = findChild(rPr, "w:i");
+  const capsNode = findChild(rPr, "w:caps");
 
-  return { fontFamily, fontSizePt, bold, italic, uppercase: caps };
+  return {
+    fontFamily,
+    fontSizePt,
+    bold: bNode ? boolAttr(bNode) : false,
+    italic: iNode ? boolAttr(iNode) : false,
+    uppercase: capsNode ? boolAttr(capsNode) : false,
+  };
 }
 
 // Đọc word/styles.xml: mỗi named style (VD "Normal", "Kinhgui"...) có thể tự định nghĩa
-// font/cỡ chữ riêng trong w:rPr của chính nó, và có thể kế thừa (w:basedOn) từ style khác.
-// Nếu 1 đoạn văn tham chiếu style qua w:pStyle nhưng không set font trực tiếp trên run,
-// font "thật" của đoạn đó là font của style - không phải font mặc định toàn tài liệu.
+// font/cỡ chữ riêng, và có thể kế thừa (w:basedOn) từ style khác. Khi 1 đoạn văn KHÔNG
+// khai báo w:pStyle tường minh, Word vẫn ngầm định áp style mặc định (thường tên "Normal",
+// đánh dấu w:default="1") - không phải docDefaults của cả file. Bỏ qua bước này sẽ đọc
+// nhầm sang font mặc định toàn tài liệu dù style "Normal" thật sự set font khác.
 type StyleMap = Map<string, { fontFamily?: string; fontSizePt?: number; basedOn?: string }>;
 
-function parseStylesXml(styles: any): { styleMap: StyleMap; docDefaults: RunDefaults } {
+function parseStylesXml(styles: any): {
+  styleMap: StyleMap;
+  docDefaults: RunDefaults;
+  defaultParagraphStyleId?: string;
+} {
   const docDefaultsNode = styles["w:styles"]?.["w:docDefaults"]?.["w:rPrDefault"]?.["w:rPr"];
   const docDefaults: RunDefaults = {
     fontFamily: docDefaultsNode?.["w:rFonts"]?.["@_w:ascii"],
@@ -100,6 +162,8 @@ function parseStylesXml(styles: any): { styleMap: StyleMap; docDefaults: RunDefa
   };
 
   const styleMap: StyleMap = new Map();
+  let defaultParagraphStyleId: string | undefined;
+
   for (const style of asArray(styles["w:styles"]?.["w:style"])) {
     const styleId = style["@_w:styleId"];
     if (!styleId) continue;
@@ -109,18 +173,27 @@ function parseStylesXml(styles: any): { styleMap: StyleMap; docDefaults: RunDefa
       fontSizePt: rPr?.["w:sz"]?.["@_w:val"] ? Number(rPr["w:sz"]["@_w:val"]) * HALF_POINT_TO_PT : undefined,
       basedOn: style["w:basedOn"]?.["@_w:val"],
     });
+    if (style["@_w:type"] === "paragraph" && style["@_w:default"] === "1") {
+      defaultParagraphStyleId = styleId;
+    }
   }
 
-  return { styleMap, docDefaults };
+  return { styleMap, docDefaults, defaultParagraphStyleId };
 }
 
-function resolveStyleDefaults(styleId: string | undefined, styleMap: StyleMap, docDefaults: RunDefaults): RunDefaults {
-  if (!styleId) return docDefaults;
+function resolveStyleDefaults(
+  explicitStyleId: string | undefined,
+  defaultParagraphStyleId: string | undefined,
+  styleMap: StyleMap,
+  docDefaults: RunDefaults
+): RunDefaults {
+  const startId = explicitStyleId ?? defaultParagraphStyleId;
+  if (!startId) return docDefaults;
 
   let fontFamily: string | undefined;
   let fontSizePt: number | undefined;
   const visited = new Set<string>();
-  let current: string | undefined = styleId;
+  let current: string | undefined = startId;
 
   while (current && !visited.has(current)) {
     visited.add(current);
@@ -134,37 +207,49 @@ function resolveStyleDefaults(styleId: string | undefined, styleMap: StyleMap, d
   return { fontFamily: fontFamily ?? docDefaults.fontFamily, fontSizePt: fontSizePt ?? docDefaults.fontSizePt };
 }
 
-function buildParagraph(p: any, defaults: RunDefaults, styleMap: StyleMap): DocxParagraph {
-  const alignment = p["w:pPr"]?.["w:jc"]?.["@_w:val"];
-  const pStyleId = p["w:pPr"]?.["w:pStyle"]?.["@_w:val"];
-  const paragraphDefaults = resolveStyleDefaults(pStyleId, styleMap, defaults);
+function buildParagraph(
+  pNode: any,
+  defaults: RunDefaults,
+  styleMap: StyleMap,
+  defaultParagraphStyleId: string | undefined
+): DocxParagraph {
+  const pPr = findChild(pNode, "w:pPr");
+  const jc = pPr ? findChild(pPr, "w:jc") : undefined;
+  const alignment = jc ? attrOf(jc, "w:val") : undefined;
+  const pStyleNode = pPr ? findChild(pPr, "w:pStyle") : undefined;
+  const explicitStyleId = pStyleNode ? attrOf(pStyleNode, "w:val") : undefined;
 
-  const runNodes: any[] = asArray(p["w:r"]);
-  const runs: DocxRun[] = runNodes.map((r) => ({
+  const paragraphDefaults = resolveStyleDefaults(explicitStyleId, defaultParagraphStyleId, styleMap, defaults);
+
+  const runs: DocxRun[] = findChildren(pNode, "w:r").map((r) => ({
     text: extractRunText(r),
     ...extractRunProps(r, paragraphDefaults),
   }));
+
   return { text: runs.map((r) => r.text).join(""), alignment, runs };
 }
 
-// Đệ quy vì ô bảng (w:tc) có thể chứa bảng lồng nhau.
-function collectTableParagraphs(
-  tbl: any,
+// Duyệt các con trực tiếp của 1 container (body hoặc ô bảng) theo đúng thứ tự thật,
+// đệ quy vào bảng lồng nhau để giữ nguyên trình tự đọc tự nhiên của văn bản.
+function collectFromContainer(
+  container: any,
   defaults: RunDefaults,
-  styleMap: StyleMap
-): DocxParagraph[] {
-  const result: DocxParagraph[] = [];
-  for (const tr of asArray(tbl["w:tr"])) {
-    for (const tc of asArray(tr["w:tc"])) {
-      for (const p of asArray(tc["w:p"])) {
-        result.push(buildParagraph(p, defaults, styleMap));
-      }
-      for (const nestedTbl of asArray(tc["w:tbl"])) {
-        result.push(...collectTableParagraphs(nestedTbl, defaults, styleMap));
+  styleMap: StyleMap,
+  defaultParagraphStyleId: string | undefined,
+  out: DocxParagraph[]
+): void {
+  for (const child of childrenOf(container)) {
+    const tag = tagOf(child);
+    if (tag === "w:p") {
+      out.push(buildParagraph(child, defaults, styleMap, defaultParagraphStyleId));
+    } else if (tag === "w:tbl") {
+      for (const tr of findChildren(child, "w:tr")) {
+        for (const tc of findChildren(tr, "w:tc")) {
+          collectFromContainer(tc, defaults, styleMap, defaultParagraphStyleId, out);
+        }
       }
     }
   }
-  return result;
 }
 
 export async function parseDocx(buffer: Buffer | ArrayBuffer): Promise<ParsedDocx> {
@@ -175,53 +260,62 @@ export async function parseDocx(buffer: Buffer | ArrayBuffer): Promise<ParsedDoc
     throw new Error("File không đúng định dạng .docx (thiếu word/document.xml).");
   }
   const documentXml = await documentXmlFile.async("string");
-  const doc = xmlParser.parse(documentXml);
+  const parsedDoc = documentXmlParser.parse(documentXml);
 
   const stylesXmlFile = zip.file("word/styles.xml");
   let styleMap: StyleMap = new Map();
-  let runDefaults: RunDefaults = {};
+  let docDefaults: RunDefaults = {};
+  let defaultParagraphStyleId: string | undefined;
   if (stylesXmlFile) {
     const stylesXml = await stylesXmlFile.async("string");
-    const parsed = parseStylesXml(xmlParser.parse(stylesXml));
+    const parsed = parseStylesXml(stylesXmlParser.parse(stylesXml));
     styleMap = parsed.styleMap;
-    runDefaults = parsed.docDefaults;
+    docDefaults = parsed.docDefaults;
+    defaultParagraphStyleId = parsed.defaultParagraphStyleId;
   }
-  const defaultFontFamily = runDefaults.fontFamily;
-  const defaultFontSizePt = runDefaults.fontSizePt;
 
-  const body = doc["w:document"]?.["w:body"] ?? {};
-  const paragraphNodes: any[] = asArray(body["w:p"]);
+  const documentNode = (parsedDoc as any[]).find((n) => tagOf(n) === "w:document");
+  const bodyNode = documentNode ? findChild(documentNode, "w:body") : undefined;
+  if (!bodyNode) {
+    throw new Error("File không đúng định dạng .docx (thiếu w:body).");
+  }
 
-  const paragraphs: DocxParagraph[] = paragraphNodes.map((p) => buildParagraph(p, runDefaults, styleMap));
+  const paragraphs: DocxParagraph[] = [];
+  collectFromContainer(bodyNode, docDefaults, styleMap, defaultParagraphStyleId, paragraphs);
 
-  const tableParagraphs: DocxParagraph[] = asArray(body["w:tbl"]).flatMap((tbl) =>
-    collectTableParagraphs(tbl, runDefaults, styleMap)
-  );
-  const allParagraphs: DocxParagraph[] = [...paragraphs, ...tableParagraphs];
-
-  // Lấy margin/khổ giấy từ sectPr cuối cùng (áp dụng cho toàn bộ hoặc section cuối).
-  let sectPr = body["w:sectPr"];
-  if (!sectPr) {
-    for (let i = paragraphNodes.length - 1; i >= 0; i--) {
-      const candidate = paragraphNodes[i]["w:pPr"]?.["w:sectPr"];
+  // Lấy margin/khổ giấy từ sectPr của body (áp dụng cho toàn tài liệu hoặc section cuối);
+  // nếu không có, tìm sectPr lồng trong pPr của đoạn văn cuối cùng đánh dấu ngắt section.
+  let sectPrNode = findChild(bodyNode, "w:sectPr");
+  if (!sectPrNode) {
+    const bodyParagraphs = findChildren(bodyNode, "w:p");
+    for (let i = bodyParagraphs.length - 1; i >= 0; i--) {
+      const pPr = findChild(bodyParagraphs[i], "w:pPr");
+      const candidate = pPr ? findChild(pPr, "w:sectPr") : undefined;
       if (candidate) {
-        sectPr = candidate;
+        sectPrNode = candidate;
         break;
       }
     }
   }
 
-  const pgMar = sectPr?.["w:pgMar"];
+  const pgMar = sectPrNode ? findChild(sectPrNode, "w:pgMar") : undefined;
   const margins: DocxMargins = {
-    topMm: pgMar?.["@_w:top"] !== undefined ? Number(pgMar["@_w:top"]) * TWIP_TO_MM : undefined,
-    bottomMm: pgMar?.["@_w:bottom"] !== undefined ? Number(pgMar["@_w:bottom"]) * TWIP_TO_MM : undefined,
-    leftMm: pgMar?.["@_w:left"] !== undefined ? Number(pgMar["@_w:left"]) * TWIP_TO_MM : undefined,
-    rightMm: pgMar?.["@_w:right"] !== undefined ? Number(pgMar["@_w:right"]) * TWIP_TO_MM : undefined,
+    topMm: numAttrMm(pgMar, "w:top"),
+    bottomMm: numAttrMm(pgMar, "w:bottom"),
+    leftMm: numAttrMm(pgMar, "w:left"),
+    rightMm: numAttrMm(pgMar, "w:right"),
   };
 
-  const pgSz = sectPr?.["w:pgSz"];
-  const pageWidthMm = pgSz?.["@_w:w"] !== undefined ? Number(pgSz["@_w:w"]) * TWIP_TO_MM : undefined;
-  const pageHeightMm = pgSz?.["@_w:h"] !== undefined ? Number(pgSz["@_w:h"]) * TWIP_TO_MM : undefined;
+  const pgSz = sectPrNode ? findChild(sectPrNode, "w:pgSz") : undefined;
+  const pageWidthMm = numAttrMm(pgSz, "w:w");
+  const pageHeightMm = numAttrMm(pgSz, "w:h");
 
-  return { paragraphs, allParagraphs, margins, pageWidthMm, pageHeightMm, defaultFontFamily, defaultFontSizePt };
+  return {
+    paragraphs,
+    margins,
+    pageWidthMm,
+    pageHeightMm,
+    defaultFontFamily: docDefaults.fontFamily,
+    defaultFontSizePt: docDefaults.fontSizePt,
+  };
 }

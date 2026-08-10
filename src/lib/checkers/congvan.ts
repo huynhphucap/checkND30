@@ -54,7 +54,7 @@ function findParagraphIndex(
 
 export function checkCongVan(doc: ParsedDocx): CheckReport {
   const results: RuleResult[] = [];
-  const { allParagraphs, margins, pageWidthMm, pageHeightMm } = doc;
+  const { paragraphs, margins, pageWidthMm, pageHeightMm } = doc;
 
   // 1. Khổ giấy A4
   const isA4 = inRange(pageWidthMm, 210, 210, 3) && inRange(pageHeightMm, 297, 297, 3);
@@ -98,7 +98,7 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 3. Font chữ Times New Roman toàn văn bản
-  const nonTimesParagraphs = allParagraphs.filter((p) => {
+  const nonTimesParagraphs = paragraphs.filter((p) => {
     const fonts = paragraphFontFamilies(p);
     return fonts.length > 0 && fonts.some((f) => !f.toLowerCase().includes("times new roman"));
   });
@@ -116,7 +116,7 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 4. Cỡ chữ nội dung 13-14pt
-  const bodyParagraphs = allParagraphs.filter((p) => normalize(p.text).length > 15);
+  const bodyParagraphs = paragraphs.filter((p) => normalize(p.text).length > 15);
   const wrongSizeParagraphs = bodyParagraphs.filter((p) => {
     const sizes = p.runs.filter((r) => normalize(r.text).length > 0).map((r) => r.fontSizePt);
     return sizes.length > 0 && sizes.some((s) => s !== undefined && !inRange(s, 13, 14, 0.5));
@@ -141,8 +141,8 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
 
   // 5. Quốc hiệu
   // Khối quốc hiệu/tiêu ngữ thường nằm trong bảng 2 cột đầu văn bản (cùng tên cơ quan ban
-  // hành) nên tìm trên allParagraphs (bao gồm bảng), không chỉ đoạn văn ngoài bảng.
-  const heading = firstNonEmptyParagraphs(allParagraphs, 10);
+  // hành) - paragraphs đã giữ đúng thứ tự thật (kể cả trong bảng) nên vẫn nằm gần đầu danh sách.
+  const heading = firstNonEmptyParagraphs(paragraphs, 10);
   const quocHieuIdx = findParagraphIndex(heading, (t) =>
     stripDiacritics(t).toUpperCase().includes("CONG HOA XA HOI CHU NGHIA VIET NAM")
   );
@@ -184,22 +184,22 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 7. Số, ký hiệu văn bản
-  const soKyHieuIdx = findParagraphIndex(allParagraphs, (t) => /s[ốo]\s*:/i.test(t) || /^s[ốo]\s*\d/i.test(t));
+  const soKyHieuIdx = findParagraphIndex(paragraphs, (t) => /s[ốo]\s*:/i.test(t) || /^s[ốo]\s*\d/i.test(t));
   results.push({
     id: "so_ky_hieu",
     label: "Số, ký hiệu văn bản",
     status: soKyHieuIdx >= 0 ? "pass" : "fail",
     message:
       soKyHieuIdx >= 0
-        ? `Đạt: tìm thấy dòng số ký hiệu ("${normalize(allParagraphs[soKyHieuIdx].text).slice(0, 60)}").`
+        ? `Đạt: tìm thấy dòng số ký hiệu ("${normalize(paragraphs[soKyHieuIdx].text).slice(0, 60)}").`
         : 'Không đạt: không tìm thấy dòng "Số: .../..." trong văn bản.',
     reference: REF_PHU_LUC_I,
   });
 
   // 8. Địa danh, ngày tháng năm ban hành
   const diaDanhRegex = /ngày\s+\d{1,2}\s+tháng\s+\d{1,2}\s+năm\s+\d{4}/i;
-  const diaDanhIdx = findParagraphIndex(allParagraphs, (t) => diaDanhRegex.test(t));
-  const diaDanhParagraph = diaDanhIdx >= 0 ? allParagraphs[diaDanhIdx] : undefined;
+  const diaDanhIdx = findParagraphIndex(paragraphs, (t) => diaDanhRegex.test(t));
+  const diaDanhParagraph = diaDanhIdx >= 0 ? paragraphs[diaDanhIdx] : undefined;
   const diaDanhOk =
     !!diaDanhParagraph && diaDanhParagraph.alignment === "right" && paragraphIsItalic(diaDanhParagraph);
   results.push({
@@ -215,7 +215,7 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 9. Nơi nhận (thường nằm trong bảng 2 cột cùng khối chữ ký)
-  const noiNhanIdx = findParagraphIndex(allParagraphs, (t) => /n[ơo]i nh[ậa]n\s*:/i.test(t));
+  const noiNhanIdx = findParagraphIndex(paragraphs, (t) => /n[ơo]i nh[ậa]n\s*:/i.test(t));
   results.push({
     id: "noi_nhan",
     label: '"Nơi nhận" cuối văn bản',
