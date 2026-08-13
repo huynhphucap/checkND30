@@ -206,20 +206,21 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
 
   // 8. Địa danh, ngày tháng năm ban hành
   // Regex "lỏng": chỉ cần có đủ 3 từ khoá ngày/tháng/năm theo đúng thứ tự, số ở mỗi phần là
-  // tuỳ chọn - để phân biệt được 2 trường hợp khác nhau: "không có dòng này" (fail nặng) và
-  // "có dòng nhưng đang bỏ trống 1 ô số" (fail nhẹ hơn, chỉ ra đúng ô nào thiếu).
+  // tuỳ chọn - để phân biệt được 3 trường hợp khác nhau: "không có dòng này" (fail nặng),
+  // "thiếu tháng/năm" (fail - thực sự chưa điền) và "chỉ thiếu số ngày" (không tính lỗi -
+  // nhiều văn bản cố tình để trống số ngày, chờ phần mềm ký số tự điền ngày ký vào đó).
   const diaDanhLooseRegex = /ngày\s*(\d{1,2})?\s*tháng\s*(\d{1,2})?\s*năm\s*(\d{4})?/i;
   const diaDanhIdx = findParagraphIndex(paragraphs, (t) => diaDanhLooseRegex.test(t));
   const diaDanhParagraph = diaDanhIdx >= 0 ? paragraphs[diaDanhIdx] : undefined;
   const diaDanhMatch = diaDanhParagraph ? normalize(diaDanhParagraph.text).match(diaDanhLooseRegex) : null;
 
-  const missingParts: string[] = [];
+  const dayMissing = !!diaDanhMatch && !diaDanhMatch[1];
+  const missingRequiredParts: string[] = [];
   if (diaDanhMatch) {
-    if (!diaDanhMatch[1]) missingParts.push("số ngày");
-    if (!diaDanhMatch[2]) missingParts.push("số tháng");
-    if (!diaDanhMatch[3]) missingParts.push("năm");
+    if (!diaDanhMatch[2]) missingRequiredParts.push("số tháng");
+    if (!diaDanhMatch[3]) missingRequiredParts.push("năm");
   }
-  const diaDanhComplete = !!diaDanhParagraph && missingParts.length === 0;
+  const diaDanhComplete = !!diaDanhParagraph && missingRequiredParts.length === 0;
 
   const diaDanhFormatIssues: string[] = [];
   if (diaDanhComplete && diaDanhParagraph) {
@@ -234,7 +235,12 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
     diaDanhMessage = 'Không đạt: không tìm thấy dòng địa danh, ngày tháng ở đầu văn bản (dạng "..., ngày ... tháng ... năm ...").';
   } else if (!diaDanhComplete) {
     diaDanhStatus = "fail";
-    diaDanhMessage = `Không đạt: dòng "${normalize(diaDanhParagraph.text).slice(0, 60)}" đang thiếu ${missingParts.join(", ")} - cần điền đầy đủ.`;
+    diaDanhMessage = `Không đạt: dòng "${normalize(diaDanhParagraph.text).slice(0, 60)}" đang thiếu ${missingRequiredParts.join(", ")} - cần điền đầy đủ.`;
+  } else if (dayMissing) {
+    diaDanhStatus = "warning";
+    diaDanhMessage =
+      `Dòng "${normalize(diaDanhParagraph.text).slice(0, 60)}" đang để trống số ngày - hợp lý nếu văn bản chưa ký số (ngày ban hành sẽ được phần mềm ký số tự động điền). Cần kiểm tra lại sau khi ký số.` +
+      (diaDanhFormatIssues.length > 0 ? ` Ngoài ra dòng này ${diaDanhFormatIssues.join(", ")}.` : "");
   } else if (diaDanhFormatIssues.length > 0) {
     diaDanhStatus = "warning";
     diaDanhMessage = `Đã điền đủ ngày tháng năm nhưng dòng này ${diaDanhFormatIssues.join(", ")}.`;
