@@ -1,14 +1,9 @@
 import { ShieldCheck } from "lucide-react";
 import UploadChecker from "@/components/UploadChecker";
-import AuthButton from "@/components/AuthButton";
 
 export default function Home() {
   return (
     <main className="flex-1 flex flex-col px-6 py-10 md:py-16">
-      <div className="max-w-2xl mx-auto w-full flex justify-end mb-8 md:mb-10">
-        <AuthButton />
-      </div>
-
       <header className="text-center flex flex-col items-center gap-4 mb-10 md:mb-14">
         <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[var(--accent-soft)] text-[var(--accent)] ring-1 ring-[var(--border)] shadow-sm">
           <ShieldCheck className="w-7 h-7" strokeWidth={2} />

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -12,6 +13,8 @@ import {
 } from "lucide-react";
 import type { CheckReport, RuleStatus } from "@/lib/checkers/types";
 import { getFirebaseAuth } from "@/lib/firebase/client";
+
+const CHECK_TOAST_ID = "docx-check";
 
 const STATUS_META: Record<
   RuleStatus,
@@ -60,17 +63,23 @@ export default function UploadChecker() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CheckResponse | null>(null);
   const [filter, setFilter] = useState<FilterValue>("all");
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function handleFile(file: File) {
+    if (!file.name.toLowerCase().endsWith(".docx")) {
+      toast.error("Chỉ hỗ trợ file .docx", {
+        description: `"${file.name}" không đúng định dạng yêu cầu.`,
+      });
+      return;
+    }
+
     setLoading(true);
-    setError(null);
     setResult(null);
     setFilter("all");
     setFileName(file.name);
+    toast.loading("Đang phân tích thể thức văn bản...", { id: CHECK_TOAST_ID });
 
     try {
       const formData = new FormData();
@@ -86,12 +95,27 @@ export default function UploadChecker() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "Có lỗi xảy ra khi kiểm tra file.");
+        toast.error(data.error ?? "Có lỗi xảy ra khi kiểm tra file.", { id: CHECK_TOAST_ID });
         return;
       }
-      setResult(data);
+      const checkResult = data as CheckResponse;
+      setResult(checkResult);
+
+      const okCount = checkResult.report.results.filter((r) => r.status === "pass").length;
+      const total = checkResult.report.results.length;
+      if (checkResult.report.passed) {
+        toast.success("Đạt thể thức văn bản!", {
+          id: CHECK_TOAST_ID,
+          description: `${okCount}/${total} tiêu chí đạt yêu cầu.`,
+        });
+      } else {
+        toast.warning("Văn bản chưa đạt thể thức", {
+          id: CHECK_TOAST_ID,
+          description: `${okCount}/${total} tiêu chí đạt - xem chi tiết bên dưới để chỉnh sửa.`,
+        });
+      }
     } catch {
-      setError("Không thể kết nối tới máy chủ. Vui lòng thử lại.");
+      toast.error("Không thể kết nối tới máy chủ. Vui lòng thử lại.", { id: CHECK_TOAST_ID });
     } finally {
       setLoading(false);
     }
@@ -136,15 +160,24 @@ export default function UploadChecker() {
       <div
         onDragOver={(e) => {
           e.preventDefault();
-          setDragActive(true);
+          if (!loading) setDragActive(true);
         }}
         onDragLeave={() => setDragActive(false)}
-        onDrop={onDrop}
-        onClick={() => inputRef.current?.click()}
-        className={`group cursor-pointer rounded-2xl border-2 border-dashed p-10 md:p-12 text-center transition-all duration-200 ${
+        onDrop={(e) => {
+          if (!loading) onDrop(e);
+          else e.preventDefault();
+        }}
+        onClick={() => !loading && inputRef.current?.click()}
+        className={`group rounded-2xl border-2 border-dashed p-10 md:p-12 text-center transition-all duration-200 ${
+          loading
+            ? "cursor-wait border-black/10 dark:border-white/10 bg-[var(--card)]/50"
+            : "cursor-pointer"
+        } ${
           dragActive
             ? "border-[var(--accent)] bg-[var(--accent-soft)] scale-[1.01]"
-            : "border-black/15 dark:border-white/15 bg-[var(--card)]/50 hover:border-[var(--accent)]/50 hover:bg-[var(--accent-soft)]/50"
+            : loading
+              ? ""
+              : "border-black/15 dark:border-white/15 bg-[var(--card)]/50 hover:border-[var(--accent)]/50 hover:bg-[var(--accent-soft)]/50"
         }`}
       >
         <input
@@ -153,38 +186,44 @@ export default function UploadChecker() {
           accept=".docx"
           className="hidden"
           onChange={onInputChange}
+          disabled={loading}
         />
         <div
           className={`mx-auto mb-4 w-14 h-14 rounded-2xl flex items-center justify-center transition-transform duration-200 ${
             dragActive ? "scale-110" : "group-hover:scale-105"
           } bg-[var(--accent-soft)] text-[var(--accent)]`}
         >
-          <UploadCloud className="w-7 h-7" strokeWidth={2} />
+          {loading ? (
+            <Loader2 className="w-7 h-7 animate-spin" strokeWidth={2} />
+          ) : (
+            <UploadCloud className="w-7 h-7" strokeWidth={2} />
+          )}
         </div>
-        <p className="font-medium">Kéo thả file .docx vào đây, hoặc bấm để chọn file</p>
-        <p className="text-sm text-black/50 dark:text-white/50 mt-1">
-          Chỉ hỗ trợ Công văn (.docx), tối đa 10MB
+        <p className="font-medium">
+          {loading ? "Đang phân tích thể thức văn bản..." : "Kéo thả file .docx vào đây"}
         </p>
+        <p className="text-sm text-black/50 dark:text-white/50 mt-1 mb-5">
+          {loading ? "Vui lòng chờ trong giây lát" : "Chỉ hỗ trợ Công văn (.docx), tối đa 10MB"}
+        </p>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={(e) => {
+            e.stopPropagation();
+            inputRef.current?.click();
+          }}
+          className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-[var(--accent)] to-fuchsia-500 text-white text-sm font-semibold px-5 py-2.5 shadow-md shadow-[var(--accent)]/20 transition-all hover:shadow-lg hover:shadow-[var(--accent)]/30 hover:-translate-y-0.5 disabled:opacity-50 disabled:pointer-events-none disabled:translate-y-0"
+        >
+          <UploadCloud className="w-4 h-4" strokeWidth={2.25} />
+          Chọn file để kiểm tra
+        </button>
         {fileName && (
-          <p className="inline-flex items-center gap-1.5 text-sm mt-4 font-mono bg-black/5 dark:bg-white/10 rounded-full px-3 py-1">
+          <p className="inline-flex items-center gap-1.5 text-sm mt-5 font-mono bg-black/5 dark:bg-white/10 rounded-full px-3 py-1">
             <FileText className="w-3.5 h-3.5" />
             {fileName}
           </p>
         )}
       </div>
-
-      {loading && (
-        <div className="flex items-center justify-center gap-2 text-sm text-black/60 dark:text-white/60 py-2">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          Đang phân tích thể thức văn bản...
-        </div>
-      )}
-
-      {error && (
-        <p className="text-center text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-xl py-3 px-4 animate-fade-in-up">
-          {error}
-        </p>
-      )}
 
       {result && (
         <div className="flex flex-col gap-4 animate-fade-in-up">
@@ -227,7 +266,7 @@ export default function UploadChecker() {
                 <button
                   type="button"
                   onClick={() => inputRef.current?.click()}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--accent)] hover:underline"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-[var(--accent)] bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]/25 rounded-full px-3 py-1.5 transition-all hover:ring-[var(--accent)]/50 hover:-translate-y-0.5"
                 >
                   <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />
                   Sửa xong, kiểm tra lại
@@ -245,10 +284,10 @@ export default function UploadChecker() {
                   type="button"
                   onClick={() => setFilter(opt.value)}
                   disabled={opt.count === 0 && opt.value !== "all"}
-                  className={`inline-flex items-center gap-1.5 text-sm font-medium rounded-full px-3.5 py-1.5 border transition-colors disabled:opacity-35 disabled:cursor-not-allowed ${
+                  className={`inline-flex items-center gap-1.5 text-sm font-medium rounded-full px-3.5 py-1.5 border transition-all disabled:opacity-35 disabled:cursor-not-allowed ${
                     active
-                      ? "bg-[var(--accent)] text-white border-[var(--accent)]"
-                      : "bg-[var(--card)] text-black/70 dark:text-white/70 border-[var(--border)] hover:border-[var(--accent)]/50"
+                      ? "bg-[var(--accent)] text-white border-[var(--accent)] shadow-md shadow-[var(--accent)]/25"
+                      : "bg-[var(--card)] text-black/70 dark:text-white/70 border-[var(--border)] hover:border-[var(--accent)]/50 hover:-translate-y-0.5"
                   }`}
                 >
                   {opt.label}
