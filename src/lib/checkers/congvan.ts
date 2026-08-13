@@ -51,6 +51,7 @@ function findParagraphIndex(
 export function checkCongVan(doc: ParsedDocx): CheckReport {
   const results: RuleResult[] = [];
   const { paragraphs, margins, pageWidthMm, pageHeightMm } = doc;
+  const noiNhanIdx = findParagraphIndex(paragraphs, (t) => /n[ơo]i nh[ậa]n\s*:/i.test(t));
 
   // 1. Khổ giấy A4
   const isA4 = inRange(pageWidthMm, 210, 210, 3) && inRange(pageHeightMm, 297, 297, 3);
@@ -116,7 +117,33 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 4. Cỡ chữ nội dung 13-14pt
-  const bodyParagraphs = paragraphs.filter((p) => normalize(p.text).length > 15);
+  // Phụ lục I quy định cỡ chữ khác với nội dung chính cho 1 số thành phần: trích yếu nội
+  // dung công văn (12-13, đậm) và khối "Nơi nhận" (nhãn 12 đậm nghiêng, danh sách liệt kê
+  // 11) - phải loại các đoạn này ra khỏi phép kiểm tra 13-14pt chung, nếu không sẽ báo sai
+  // dù văn bản đã trình bày đúng quy định.
+  const trichYeuIdx = findParagraphIndex(paragraphs, (t) => {
+    const s = stripDiacritics(t).toLowerCase();
+    return /^v\/v\b/.test(s) || /^ve viec\b/.test(s);
+  });
+  const noiNhanBlockIndexes = new Set<number>();
+  if (noiNhanIdx >= 0) {
+    noiNhanBlockIndexes.add(noiNhanIdx);
+    for (let i = noiNhanIdx + 1; i < paragraphs.length; i++) {
+      const t = normalize(paragraphs[i].text);
+      if (t.length === 0) continue;
+      if (t.startsWith("-")) {
+        noiNhanBlockIndexes.add(i);
+        continue;
+      }
+      break;
+    }
+  }
+  const excludedFromBodyFontCheck = new Set<number>(
+    [trichYeuIdx, ...noiNhanBlockIndexes].filter((i) => i >= 0)
+  );
+  const bodyParagraphs = paragraphs.filter(
+    (p, i) => normalize(p.text).length > 15 && !excludedFromBodyFontCheck.has(i)
+  );
   const wrongSizeParagraphs = bodyParagraphs.filter((p) => {
     const sizes = p.runs.filter((r) => normalize(r.text).length > 0).map((r) => r.fontSizePt);
     return sizes.length > 0 && sizes.some((s) => s !== undefined && !inRange(s, 13, 14, 0.5));
@@ -258,7 +285,6 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 9. Nơi nhận (thường nằm trong bảng 2 cột cùng khối chữ ký)
-  const noiNhanIdx = findParagraphIndex(paragraphs, (t) => /n[ơo]i nh[ậa]n\s*:/i.test(t));
   results.push({
     id: "noi_nhan",
     label: '"Nơi nhận" cuối văn bản',
