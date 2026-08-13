@@ -235,8 +235,9 @@ function buildParagraph(
   return { text: runs.map((r) => r.text).join(""), alignment, runs };
 }
 
-// Duyệt các con trực tiếp của 1 container (body hoặc ô bảng) theo đúng thứ tự thật,
-// đệ quy vào bảng lồng nhau để giữ nguyên trình tự đọc tự nhiên của văn bản.
+// Duyệt các con trực tiếp của 1 container (body, ô bảng, hoặc nội dung content control)
+// theo đúng thứ tự thật, đệ quy vào bảng lồng nhau và bảng bọc trong content control
+// (w:sdt - VD khối quốc hiệu/tiêu ngữ chèn từ Quick Parts/Building Block) để không bỏ sót.
 function collectFromContainer(
   container: any,
   defaults: RunDefaults,
@@ -253,6 +254,11 @@ function collectFromContainer(
         for (const tc of findChildren(tr, "w:tc")) {
           collectFromContainer(tc, defaults, styleMap, defaultParagraphStyleId, out);
         }
+      }
+    } else if (tag === "w:sdt") {
+      const sdtContent = findChild(child, "w:sdtContent");
+      if (sdtContent) {
+        collectFromContainer(sdtContent, defaults, styleMap, defaultParagraphStyleId, out);
       }
     }
   }

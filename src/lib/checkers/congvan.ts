@@ -23,10 +23,6 @@ function stripDiacritics(text: string): string {
     .replace(/đ/gi, "d");
 }
 
-function firstNonEmptyParagraphs(paragraphs: DocxParagraph[], count: number): DocxParagraph[] {
-  return paragraphs.filter((p) => normalize(p.text).length > 0).slice(0, count);
-}
-
 function paragraphFontFamilies(p: DocxParagraph): string[] {
   return Array.from(
     new Set(p.runs.filter((r) => normalize(r.text).length > 0).map((r) => r.fontFamily).filter(Boolean))
@@ -145,12 +141,13 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
 
   // 5. Quốc hiệu
   // Khối quốc hiệu/tiêu ngữ thường nằm trong bảng 2 cột đầu văn bản (cùng tên cơ quan ban
-  // hành) - paragraphs đã giữ đúng thứ tự thật (kể cả trong bảng) nên vẫn nằm gần đầu danh sách.
-  const heading = firstNonEmptyParagraphs(paragraphs, 10);
-  const quocHieuIdx = findParagraphIndex(heading, (t) =>
+  // hành), đôi khi bảng đó còn bọc trong content control (Quick Parts). paragraphs đã giữ
+  // đúng thứ tự thật và duyệt cả 2 trường hợp trên, nên tìm trên toàn bộ danh sách thay vì
+  // giới hạn 10 đoạn đầu - tránh bỏ sót khi bảng letterhead có nhiều dòng/ô hơn dự kiến.
+  const quocHieuIdx = findParagraphIndex(paragraphs, (t) =>
     stripDiacritics(t).toUpperCase().includes("CONG HOA XA HOI CHU NGHIA VIET NAM")
   );
-  const quocHieu = quocHieuIdx >= 0 ? heading[quocHieuIdx] : undefined;
+  const quocHieu = quocHieuIdx >= 0 ? paragraphs[quocHieuIdx] : undefined;
   const quocHieuIssues: string[] = [];
   if (quocHieu) {
     if (quocHieu.alignment !== "center") quocHieuIssues.push("chưa canh giữa");
@@ -171,11 +168,11 @@ export function checkCongVan(doc: ParsedDocx): CheckReport {
   });
 
   // 6. Tiêu ngữ
-  const tieuNguIdx = findParagraphIndex(heading, (t) => {
+  const tieuNguIdx = findParagraphIndex(paragraphs, (t) => {
     const s = stripDiacritics(t).toLowerCase();
     return s.includes("doc lap") && s.includes("tu do") && s.includes("hanh phuc");
   });
-  const tieuNgu = tieuNguIdx >= 0 ? heading[tieuNguIdx] : undefined;
+  const tieuNgu = tieuNguIdx >= 0 ? paragraphs[tieuNguIdx] : undefined;
   const tieuNguIssues: string[] = [];
   if (tieuNgu) {
     if (tieuNgu.alignment !== "center") tieuNguIssues.push("chưa canh giữa");
